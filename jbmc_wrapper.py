@@ -6,6 +6,8 @@ import subprocess
 import time
 import re
 import shutil
+import hashlib
+from datetime import datetime
 from tool_wrapper import ToolWrapper
 
 class JBMCWrapper(ToolWrapper):
@@ -16,7 +18,11 @@ class JBMCWrapper(ToolWrapper):
         self.tool_binary = "./jbmc-binary"
         self.tool_name = "JBMC"
         self.find_options = "-name '*.java'"
+<<<<<<< HEAD
         self.jvm_home = "/usr/lib/jvm/java-8-openjdk-amd64"
+=======
+        self.jvm_home = "/Users/pschrammel/.sdkman/candidates/java/current" #"/usr/lib/jvm/java-8-openjdk-amd64"
+>>>>>>> 0cf5883 (Construct violation witness)
 
     def print_version(self):
         """Print JBMC version"""
@@ -183,9 +189,74 @@ class JBMCWrapper(ToolWrapper):
         return ec
 
 
-    def _create_minimal_witness(self):
-        """Create a minimal GraphML witness"""
-        witness_content = '''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+    def _create_minimal_witness(self, specification=None, nondet_assumptions=None):
+        """Create a minimal GraphML witness
+
+        Args:
+            specification: The property specification string from the property file
+            nondet_assumptions: List of dicts containing nondet function call information:
+                [{'file': 'org/sosy_lab/sv_benchmarks/Verifier.java',
+                  'line': 50,
+                  'function': 'nondetInt',
+                  'scope': 'java::org.sosy_lab.sv_benchmarks.Verifier.nondetInt:()I',
+                  'value': '11'},
+                 ...]
+        """
+        if specification is None:
+            # Read from property file
+            with open(self.prop_file, 'r') as f:
+                specification = f.read().strip()
+
+        # Calculate program hash
+        with open(self.benchmarks[0], 'rb') as f:
+            program_hash = hashlib.sha256(f.read()).hexdigest()
+
+        # Get creation time
+        creation_time = datetime.now().isoformat()
+
+        # Build nodes and edges
+        nodes_edges = []
+
+        # Always have a sink node
+        nodes_edges.append('    <node id="sink"/>')
+
+        # Start with entry node
+        nodes_edges.append('    <node id="1">')
+        nodes_edges.append('      <data key="entry">true</data>')
+        nodes_edges.append('    </node>')
+
+        current_node = 1
+
+        # Add edges for each nondet assumption
+        if nondet_assumptions:
+            for assumption in nondet_assumptions:
+                next_node = current_node + 1
+                nodes_edges.append(f'    <edge source="{current_node}" target="{next_node}">')
+                nodes_edges.append(f'      <data key="originfile">{assumption["file"]}</data>')
+                nodes_edges.append(f'      <data key="startline">{assumption["line"]}</data>')
+                nodes_edges.append('      <data key="threadId">0</data>')
+
+                # Format the assumption based on function type
+                if assumption["function"] == "nondetString":
+                    nodes_edges.append(f'      <data key="assumption">return_tmp0 = "{assumption["value"]}";</data>')
+                else:
+                    nodes_edges.append(f'      <data key="assumption">return_tmp0 = {assumption["value"]};</data>')
+
+                nodes_edges.append(f'      <data key="assumption.scope">{assumption["scope"]}</data>')
+                nodes_edges.append('    </edge>')
+
+                # Add the next node
+                nodes_edges.append(f'    <node id="{next_node}"/>')
+                current_node = next_node
+
+        # Mark the last node as violation node
+        if current_node > 1:
+            # Replace the last node with violation node
+            nodes_edges[-1] = f'    <node id="{current_node}">'
+            nodes_edges.append('      <data key="violation">true</data>')
+            nodes_edges.append('    </node>')
+
+        witness_content = f'''<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <graphml xmlns="http://graphml.graphdrawing.org/xmlns" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
   <key attr.name="originFileName" attr.type="string" for="edge" id="originfile">
     <default>&lt;command-line&gt;</default>
@@ -229,6 +300,15 @@ class JBMCWrapper(ToolWrapper):
   <key attr.name="returnFromFunction" attr.type="string" for="edge" id="returnFrom"/>
   <key attr.name="witness-type" attr.type="string" for="graph" id="witness-type"/>
   <graph edgedefault="directed">
+    <data key="witness-type">violation_witness</data>
+    <data key="producer">{self.tool_name}</data>
+    <data key="specification">{specification}</data>
+    <data key="programfile">{self.benchmarks[0]}</data>
+    <data key="programhash">{program_hash}</data>
+    <data key="architecture">{self.bit_width}bit</data>
+    <data key="creationtime">{creation_time}</data>
+    <data key="sourcecodelang">Java</data>
+{chr(10).join(nodes_edges)}
   </graph>
 </graphml>
 '''
