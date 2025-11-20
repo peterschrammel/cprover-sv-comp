@@ -17,12 +17,9 @@ class JBMCWrapper(ToolWrapper):
         super().__init__()
         self.tool_binary = "./jbmc-binary"
         self.tool_name = "JBMC"
+        self.nondet_values = {}
         self.find_options = "-name '*.java'"
-<<<<<<< HEAD
         self.jvm_home = "/usr/lib/jvm/java-8-openjdk-amd64"
-=======
-        self.jvm_home = "/Users/pschrammel/.sdkman/candidates/java/current" #"/usr/lib/jvm/java-8-openjdk-amd64"
->>>>>>> 0cf5883 (Construct violation witness)
 
     def print_version(self):
         """Print JBMC version"""
@@ -94,24 +91,92 @@ class JBMCWrapper(ToolWrapper):
         return has_nondet
 
     def _instantiate_inputs_for_fuzzing(self, verifier_file):
-        """Patch the Verifier.java file"""
+        """Patch the Verifier.java file and track nondet values"""
         with open(verifier_file, 'r') as f:
             content = f.read()
 
         # Distinguish assumption from assertion failures
         content = content.replace('Runtime.getRuntime().halt(1);', 'Runtime.getRuntime().halt(2);')
 
-        # Determinize random values
-        content = content.replace('new Random().nextInt()', '11')
-        content = content.replace('new Random().nextBoolean()', 'false')
-        content = content.replace('new Random().nextLong()', '11l')
-        content = content.replace('new Random().nextFloat()', '11.0f')
-        content = content.replace('new Random().nextDouble()', '11.0')
-        content = content.replace('int size = random.nextInt();', 'int size = 1;')
-        content = content.replace('return new String(bytes);', 'return "JBMC at SV-COMP 2025";')
+        # Determinize random values and track what we're setting
+        self.nondet_values = {}
+
+        # Map of replacements and their corresponding nondet function info
+        replacements = [
+            ('(byte) (new Random().nextInt())', '(byte) 11', 'nondetByte', 'B'),
+            ('(char) (new Random().nextInt())', '(char) 11', 'nondetChar', 'C'),
+            ('(short) (new Random().nextInt())', '(short) 11', 'nondetShort', 'S'),
+            ('new Random().nextInt()', '11', 'nondetInt', 'I'),
+            ('new Random().nextBoolean()', 'false', 'nondetBoolean', 'Z'),
+            ('new Random().nextLong()', '11L', 'nondetLong', 'J'),
+            ('new Random().nextFloat()', '11.0f', 'nondetFloat', 'F'),
+            ('new Random().nextDouble()', '11.0', 'nondetDouble', 'D')
+        ]
+
+        for old, new, func_name, type_sig in replacements:
+            if old in content:
+                content = content.replace(old, new)
+                if func_name not in self.nondet_values:
+                    self.nondet_values[func_name] = {
+                        'value': new,
+                        'type_sig': type_sig
+                    }
+
+        # Special handling for string
+        if 'return new String(bytes);' in content:
+            content = content.replace('return new String(bytes);', 'return "JBMC at SV-COMP 2026";')
+            self.nondet_values['nondetString'] = {
+                'value': 'JBMC at SV-COMP 2026',
+                'type_sig': 'Ljava/lang/String;'
+            }
 
         with open(verifier_file, 'w') as f:
             f.write(content)
+
+    def _extract_nondet_assumptions(self):
+        """Extract information about nondet calls from all benchmark files
+
+        Returns:
+            List of nondet assumption dicts with file, line, function, scope, and value
+        """
+        assumptions = []
+
+        # Pattern to match Verifier.nondet* calls
+        nondet_pattern = re.compile(r'Verifier\.nondet(\w+)\(\)')
+
+        for bm_file in self.benchmarks:
+            with open(bm_file, 'r') as f:
+                lines = f.readlines()
+
+            # Get relative path for the file
+            if 'common/org/sosy_lab/sv_benchmarks' in bm_file:
+                origin_file = bm_file.split('common/')[-1]
+            else:
+                origin_file = os.path.basename(bm_file)
+
+            for line_num, line in enumerate(lines, 1):
+                match = nondet_pattern.search(line)
+                if match:
+                    func_name = 'nondet' + match.group(1)
+
+                    # Skip if we don't have a value for this function
+                    if func_name not in self.nondet_values:
+                        continue
+
+                    value_info = self.nondet_values[func_name]
+
+                    # Construct the scope string
+                    scope = f'java::org.sosy_lab.sv_benchmarks.Verifier.{func_name}:(){value_info["type_sig"]}'
+
+                    assumptions.append({
+                        'file': origin_file,
+                        'line': line_num,
+                        'function': func_name,
+                        'scope': scope,
+                        'value': value_info['value']
+                    })
+
+        return assumptions
 
     def _compile_benchmark_files_for_fuzzing(self, classes_dir):
         """Compile Java benchmark files for fuzzing
@@ -177,8 +242,9 @@ class JBMCWrapper(ToolWrapper):
         # Actual failure found
         if ecr == 1:
             ec = 10
-            # Create minimal witness
-            self._create_minimal_witness()
+            # Extract nondet assumptions and create witness
+            nondet_assumptions = self._extract_nondet_assumptions()
+            self._create_minimal_witness(nondet_assumptions=nondet_assumptions)
             shutil.copy(f"{self.log_file}.latest", f"{self.log_file}.ok")
         elif ecr == 0:
             # No assertion failure, but might be deterministic
