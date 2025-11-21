@@ -451,6 +451,7 @@ class JBMCWrapper(ToolWrapper):
                 "--function", self.entry,
                 "-jar", task_jar
             ]
+            print(" ".join(jbmc_cmd))
 
             try:
                 result = subprocess.run(
