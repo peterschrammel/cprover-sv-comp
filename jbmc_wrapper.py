@@ -31,17 +31,17 @@ class JBMCWrapper(ToolWrapper):
         classes_dir, src_dir = self._create_directories()
 
         # Process benchmark files
-        has_nondet = self._process_benchmark_files_for_fuzzing(src_dir)
+        has_nondet, original_verifier_file = self._process_benchmark_files_for_fuzzing(src_dir)
 
         # Compile benchmark files
-        self._compile_benchmark_files_for_fuzzing(classes_dir)
+        self._compile_benchmark_files(classes_dir)
 
         # Try running with Java first
         ec = self._run_fuzzing(classes_dir, has_nondet)
 
         if ec == 42:
             # Process benchmark files for JBMC
-            task_jar = self._process_benchmark_files_for_jbmc(classes_dir)
+            task_jar = self._process_benchmark_files_for_jbmc(src_dir, classes_dir, original_verifier_file)
 
             # Run JBMC
             ec = self._run_jbmc(task_jar)
@@ -64,6 +64,7 @@ class JBMCWrapper(ToolWrapper):
 
         Returns:
             has_nondet boolean
+            original_verifier_file path if found
         """
         has_nondet = False
         verifier_file = None
@@ -72,12 +73,7 @@ class JBMCWrapper(ToolWrapper):
             if "Verifier.java" in bm_file:
                 verifier_file = os.path.join(src_dir, "Verifier.java")
                 shutil.copy(bm_file, verifier_file)
-
-                # Also copy ObjectFactory.java if it exists
-                object_factory = os.path.join(os.path.dirname(bm_file), "ObjectFactory.java")
-                if os.path.exists(object_factory):
-                    shutil.copy(object_factory, os.path.join(src_dir, "ObjectFactory.java"))
-
+                original_verifier_file = bm_file
                 self.benchmarks[i] = verifier_file
             else:
                 with open(bm_file, 'r') as f:
@@ -88,7 +84,7 @@ class JBMCWrapper(ToolWrapper):
             # Patch Verifier.java
             self._instantiate_inputs_for_fuzzing(verifier_file)
 
-        return has_nondet
+        return has_nondet, original_verifier_file
 
     def _instantiate_inputs_for_fuzzing(self, verifier_file):
         """Patch the Verifier.java file and track nondet values"""
@@ -178,8 +174,8 @@ class JBMCWrapper(ToolWrapper):
 
         return assumptions
 
-    def _compile_benchmark_files_for_fuzzing(self, classes_dir):
-        """Compile Java benchmark files for fuzzing
+    def _compile_benchmark_files(self, classes_dir):
+        """Compile Java benchmark files
 
         Args:
             classes_dir: The directory where compiled classes should be placed
@@ -187,9 +183,11 @@ class JBMCWrapper(ToolWrapper):
         javac_cmd = [
             os.path.join(self.jvm_home, "bin", "javac"),
             "-g",
-            "-cp", classes_dir,
+            "-cp", ":".join([classes_dir, "cprover-api.jar"]),
             "-d", classes_dir
         ] + self.benchmarks
+
+        print(" ".join(javac_cmd))
 
         subprocess.run(javac_cmd, check=True)
 
@@ -381,7 +379,61 @@ class JBMCWrapper(ToolWrapper):
         with open(f"{self.log_file}.witness", 'w') as f:
             f.write(witness_content)
 
-    def _process_benchmark_files_for_jbmc(self, classes_dir):
+    def _patch_verifier_class_for_jbmc(self, src_dir, original_verifier_file):
+        """Patch the Verifier.java file for JBMC analysis by replacing Runtime.halt() and Random() calls"""
+
+        for i, bm_file in enumerate(self.benchmarks):
+            if "Verifier.java" in bm_file:
+                verifier_file = os.path.join(src_dir, "Verifier.java")
+                shutil.copy(original_verifier_file, verifier_file)
+                self.benchmarks[i] = verifier_file
+
+        with open(verifier_file, 'r') as f:
+            content = f.read()
+
+        # Replace Runtime.halt() with CProver.assume()
+        # Match pattern: if (!condition) { \n Runtime.getRuntime().halt(1); \n }
+        pattern = r'if\s*\(\s*!\s*([^)]+)\)\s*\{\s*\n\s*Runtime\.getRuntime\(\)\.halt\(1\);\s*\n\s*\}'
+        content = re.sub(pattern, r'org.cprover.CProver.assume(\1);', content, flags=re.MULTILINE)
+
+        # Replace Random() calls with CProver nondet methods
+        replacements = [
+            (r'return new Random\(\)\.nextBoolean\(\);', 'return org.cprover.CProver.nondetBoolean();'),
+            (r'return \(byte\) \(new Random\(\)\.nextInt\(\)\);', 'return org.cprover.CProver.nondetByte();'),
+            (r'return \(char\) \(new Random\(\)\.nextInt\(\)\);', 'return org.cprover.CProver.nondetChar();'),
+            (r'return \(short\) \(new Random\(\)\.nextInt\(\)\);', 'return org.cprover.CProver.nondetShort();'),
+            (r'return new Random\(\)\.nextInt\(\);', 'return org.cprover.CProver.nondetInt();'),
+            (r'return new Random\(\)\.nextLong\(\);', 'return org.cprover.CProver.nondetLong();'),
+            (r'return new Random\(\)\.nextFloat\(\);', 'return org.cprover.CProver.nondetFloat();'),
+            (r'return new Random\(\)\.nextDouble\(\);', 'return org.cprover.CProver.nondetDouble();'),
+        ]
+
+        for pattern, replacement in replacements:
+            content = re.sub(pattern, replacement, content)
+
+        # Replace the complex string generation pattern
+        string_pattern = r'Random random = new Random\(\);\n\s*int size = random\.nextInt\(\);\n\s*assume\(size >= 0\);\n\s*byte\[\] bytes = new byte\[size\];\n\s*random\.nextBytes\(bytes\);\n\s*return new String\(bytes\);'
+        content = re.sub(string_pattern, 'return org.cprover.CProver.nondetWithoutNull("");', content, flags=re.MULTILINE)
+
+        with open(verifier_file, 'w') as f:
+            f.write(content)
+
+    def _compile_verifier_for_jbmc(self, src_dir, classes_dir):
+        """Compile the patched Verifier class against cprover-api.jar"""
+        verifier_file = os.path.join(src_dir, "Verifier.java")
+        if not os.path.exists(verifier_file):
+            return
+
+        # Compile Verifier.java with cprover-api.jar in classpath
+        javac_cmd = [
+            os.path.join(self.jvm_home, "bin", "javac"),
+            "-g",
+            "-cp", "cprover-api.jar",
+            "-d", classes_dir,
+            verifier_file
+        ]
+
+    def _process_benchmark_files_for_jbmc(self, src_dir, classes_dir, original_verifier_file):
         """Process benchmark files for JBMC analysis
 
         Args:
@@ -394,6 +446,12 @@ class JBMCWrapper(ToolWrapper):
         verifier_class = os.path.join(classes_dir, "org", "sosy_lab", "sv_benchmarks", "Verifier.class")
         if os.path.exists(verifier_class):
             os.remove(verifier_class)
+
+        # Patch Verifier class for JBMC
+        self._patch_verifier_class_for_jbmc(src_dir, original_verifier_file)
+
+        # Compile Verifier class against cprover-api.jar
+        self._compile_benchmark_files(classes_dir)
 
         # Create JAR file
         task_jar = os.path.join(self.bm_dir, "task.jar")
