@@ -7,6 +7,8 @@ import time
 import re
 import shutil
 import hashlib
+import uuid
+import yaml
 from datetime import datetime
 from tool_wrapper import ToolWrapper
 
@@ -20,10 +22,26 @@ class JBMCWrapper(ToolWrapper):
         self.nondet_values = {}
         self.find_options = "-name '*.java'"
         self.jvm_home = "/usr/lib/jvm/java-8-openjdk-amd64"
+        self.use_yaml_witness = True
 
     def print_version(self):
         """Print JBMC version"""
         subprocess.run([self.tool_binary, "--version"])
+
+    def get_version(self):
+        """Get JBMC version string"""
+        try:
+            result = subprocess.run([self.tool_binary, "--version"],
+                                    capture_output=True, text=True, check=True)
+            # Extract version from output (usually first line)
+            version_line = result.stdout.strip().split('\n')[0]
+            # Extract version number (e.g., "JBMC version 5.95.0" -> "5.95.0")
+            version_match = re.search(r'(\d+\.\d+\.\d+)', version_line)
+            if version_match:
+                return version_match.group(1)
+            return version_line
+        except Exception:
+            return "unknown"
 
     def run(self):
         """Run fuzzing first, then JBMC"""
@@ -250,7 +268,10 @@ class JBMCWrapper(ToolWrapper):
             # No assertion failure, but might be deterministic
             if not has_nondet:
                 ec = 0
-                self._create_minimal_correctness_witness()
+                if self.use_yaml_witness:
+                    self._create_minimal_correctness_witness_v2()
+                else:
+                    self._create_minimal_correctness_witness()
                 shutil.copy(f"{self.log_file}.latest", f"{self.log_file}.ok")
 
         return ec
@@ -447,6 +468,55 @@ class JBMCWrapper(ToolWrapper):
         with open(self.witness_file, 'w') as f:
             f.write(witness_content)
 
+    def _create_minimal_correctness_witness_v2(self):
+        """Create a minimal correctness YAML witness v2.0"""
+
+        # Calculate hashes for all benchmark files
+        input_files = []
+        input_file_hashes = {}
+
+        for benchmark_file in self.benchmarks:
+            filename = os.path.basename(benchmark_file)
+            input_files.append(filename)
+
+            with open(benchmark_file, 'rb') as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+                input_file_hashes[filename] = file_hash
+
+        # Get creation time
+        creation_time = datetime.now().isoformat() + "+00:00"
+
+        # Determine data model based on bit width
+        data_model = "LP64" if self.bit_width == "64" else "ILP32"
+
+        # Create YAML witness content
+        witness_data = {
+            "entry_type": "invariant_set",
+            "metadata": {
+                "format_version": "2.0",
+                "uuid": str(uuid.uuid4()),
+                "creation_time": creation_time,
+                "producer": {
+                    "name": f"{self.tool_name}",
+                    "version": self.get_version()
+                },
+                "task": {
+                    "input_files": input_files,
+                    "input_file_hashes": input_file_hashes,
+                    "specification": self.specification,
+                    "data_model": data_model,
+                    "language": "Java"
+                }
+            }
+        }
+
+        # Change file extension to .yml
+        witness_file_yml = os.path.splitext(self.witness_file)[0] + '.yml'
+
+        # Write YAML file
+        with open(witness_file_yml, 'w') as f:
+            yaml.dump(witness_data, f, default_flow_style=False, sort_keys=False)
+
     def _patch_verifier_class_for_jbmc(self, src_dir, original_verifier_file):
         """Patch the Verifier.java file for JBMC analysis by replacing Runtime.halt() and Random() calls"""
 
@@ -609,7 +679,12 @@ class JBMCWrapper(ToolWrapper):
                             timeout=timeout_seconds - (time.time() - start_time)
                         )
 
-                        if check_result.returncode != 0:
+                        if check_result.returncode == 0:
+                            if self.use_yaml_witness:
+                                if os.path.exists(f"{self.log_file}.witness"):
+                                    os.remove(f"{self.log_file}.witness")
+                                self._create_minimal_correctness_witness_v2()
+                        else:
                             ec = 42
 
                 # Check for verification failure
