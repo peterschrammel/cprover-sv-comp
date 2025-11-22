@@ -187,7 +187,8 @@ class JBMCWrapper(ToolWrapper):
             "-d", classes_dir
         ] + self.benchmarks
 
-        print(" ".join(javac_cmd))
+        with open(f"{self.log_file}.latest", 'w') as log:
+            log.write(" ".join(javac_cmd))
 
         subprocess.run(javac_cmd, check=True)
 
@@ -203,6 +204,7 @@ class JBMCWrapper(ToolWrapper):
 
         with open(f"{self.log_file}.latest", 'w') as log:
             try:
+                log.write(" ".join(java_cmd) + "\n")
                 result = subprocess.run(java_cmd, stdout=log, stderr=subprocess.STDOUT, timeout=10)
                 ecr = result.returncode
             except subprocess.TimeoutExpired:
@@ -509,7 +511,8 @@ class JBMCWrapper(ToolWrapper):
                 "--function", self.entry,
                 "-jar", task_jar
             ]
-            print(" ".join(jbmc_cmd))
+            with open(f"{self.log_file}.latest", 'w') as log:
+                log.write(" ".join(jbmc_cmd))
 
             try:
                 result = subprocess.run(
