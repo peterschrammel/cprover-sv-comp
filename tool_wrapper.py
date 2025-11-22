@@ -32,6 +32,7 @@ class ToolWrapper(ABC):
         self.obj_bits = "11"
         self.benchmarks = []
         self.prop_file = ""
+        self.specification = ""
         self.witness_file = ""
         self.prop = None
         self.entry = None
@@ -85,6 +86,7 @@ class ToolWrapper(ABC):
         """Parse the property file to extract property type and parameters"""
         with open(self.prop_file, 'r') as f:
             content = f.read()
+        self.specification = content.strip()
             
         # Remove whitespace
         content = re.sub(r'\s+', '', content)
@@ -189,14 +191,10 @@ class ToolWrapper(ABC):
         with open(self.benchmarks[0], 'rb') as f:
             program_hash = hashlib.sha256(f.read()).hexdigest()
             
-        # Read property specification
-        with open(self.prop_file, 'r') as f:
-            specification = f.read().strip()
-            
         # Create metadata to insert
         metadata = f"""<data key="witness-type">{witness_type}</data>
       <data key="producer">{self.tool_name}</data>
-      <data key="specification">{specification}</data>
+      <data key="specification">{self.specification}</data>
       <data key="programfile">{self.benchmarks[0]}</data>
       <data key="programhash">{program_hash}</data>
       <data key="architecture">{self.bit_width}bit</data>
