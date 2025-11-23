@@ -95,8 +95,11 @@ jbmc.zip: jbmc_wrapper.py tool_wrapper.py $(JBMC)/LICENSE $(JBMC)/$(CMAKE_BUILD_
 	cp -L $(SV_BENCHMARKS)/java/properties/valid-assert.prp $(basename $@)/smoketest/valid-assert.prp
 	cp -L $(SV_BENCHMARKS)/java/common/org/sosy_lab/sv_benchmarks/Verifier.java $(basename $@)/smoketest/common/org/sosy_lab/sv_benchmarks/
 	cp -L $(SV_BENCHMARKS)/java/common/org/sosy_lab/sv_benchmarks/ObjectFactory.java $(basename $@)/smoketest/common/org/sosy_lab/sv_benchmarks/
+	chmod 444 $(basename $@)/smoketest/common/org/sosy_lab/sv_benchmarks/*
 	cp -L $(SV_BENCHMARKS)/java/jbmc-regression/if_expr1/Main.java $(basename $@)/smoketest/true1/
+	chmod 444 $(basename $@)/smoketest/true1/*
 	cp -L $(SV_BENCHMARKS)/java/jbmc-regression/assert2/Main.java $(basename $@)/smoketest/false1/
+	chmod 444 $(basename $@)/smoketest/false1/*
 	echo '#!/usr/bin/env bash' > $(basename $@)/smoketest.sh
 	echo 'set -eux pipefail' >> $(basename $@)/smoketest.sh
 	echo './jbmc --graphml-witness witness.graphml --propertyfile smoketest/valid-assert.prp smoketest/common smoketest/true1 | tee smoketest/true1/result.log; cat smoketest/true1/result.log | grep TRUE; echo $?' >> $(basename $@)/smoketest.sh

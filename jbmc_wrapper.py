@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import stat
 import sys
 import subprocess
 import time
@@ -73,6 +74,7 @@ class JBMCWrapper(ToolWrapper):
             if "Verifier.java" in bm_file:
                 verifier_file = os.path.join(src_dir, "Verifier.java")
                 shutil.copy(bm_file, verifier_file)
+                os.chmod(verifier_file, os.stat(verifier_file).st_mode | stat.S_IWUSR)
                 original_verifier_file = bm_file
                 self.benchmarks[i] = verifier_file
             else:
@@ -454,6 +456,7 @@ class JBMCWrapper(ToolWrapper):
             if "Verifier.java" in bm_file:
                 verifier_file = os.path.join(src_dir, "Verifier.java")
                 shutil.copy(original_verifier_file, verifier_file)
+                os.chmod(verifier_file, os.stat(verifier_file).st_mode | stat.S_IWUSR)
                 self.benchmarks[i] = verifier_file
 
         with open(verifier_file, 'r') as f:
