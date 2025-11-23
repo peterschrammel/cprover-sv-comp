@@ -23,7 +23,7 @@ PROPERTY_OPTIONS = {
 
 class ToolWrapper(ABC):
     """Abstract base class for tool wrappers"""
-    
+
     def __init__(self):
         self.tool_binary = None
         self.tool_name = None
@@ -41,7 +41,7 @@ class ToolWrapper(ABC):
         self.property_options = ""
         self.log_file = None
         self.bm_dir = None
-        
+
     def parse_arguments(self, args):
         """Parse command line arguments"""
         i = 0
@@ -71,32 +71,32 @@ class ToolWrapper(ABC):
                 else:
                     self.benchmarks.append(args[i])
             i += 1
-            
+
     def validate_inputs(self):
         """Validate required inputs"""
         if not self.benchmarks or not self.prop_file:
             print("Missing benchmark or property file")
             sys.exit(1)
-            
+
         if not os.path.exists(self.benchmarks[0]) or not os.path.exists(self.prop_file):
             print("Empty benchmark or property file")
             sys.exit(1)
-            
+
     def parse_property_file(self):
         """Parse the property file to extract property type and parameters"""
         with open(self.prop_file, 'r') as f:
             content = f.read()
         self.specification = content.strip()
-            
+
         # Remove whitespace
         content = re.sub(r'\s+', '', content)
-        
+
         # Match the CHECK pattern
         match = re.match(r'^CHECK\(init\((\S+)\(\)\),LTL\((\S+)\)\)$', content)
         if match:
             self.entry = match.group(1)
             ltl_formula = match.group(2)
-            
+
             # Parse different property types
             if re.match(r'^G!label\((\S+)\)$', ltl_formula):
                 self.prop = "label"
@@ -117,11 +117,11 @@ class ToolWrapper(ABC):
             elif re.match(r'^G!uncaught\((\S+)\)$', ltl_formula):
                 self.prop = "runtime-exception"
                 self.label = re.match(r'^G!uncaught\((\S+)\)$', ltl_formula).group(1)
-                
+
         if not self.prop:
             print("Unrecognized property specification")
             sys.exit(1)
-            
+
         # Set property options
         if self.prop == "label":
             self.property_options = f"{PROPERTY_OPTIONS[self.prop]} {self.label}"
@@ -129,13 +129,13 @@ class ToolWrapper(ABC):
             self.property_options = f"{PROPERTY_OPTIONS[self.prop]} {self.label}"
         else:
             self.property_options = PROPERTY_OPTIONS.get(self.prop, "")
-            
+
     def parse_result(self, log_content):
         """Parse the tool output to determine the result"""
         lines = log_content.split('\n')
         tail_lines = lines[-50:] if len(lines) >= 50 else lines
         tail_content = '\n'.join(tail_lines)
-        
+
         if re.search(r"Unmodelled library functions have been called", tail_content):
             return "UNKNOWN"
         elif re.search(r"(\[.*\] .*__CPROVER_memory_leak == NULL|\s*__CPROVER_memory_leak == NULL$)", tail_content, re.MULTILINE):
@@ -174,23 +174,23 @@ class ToolWrapper(ABC):
             return "FALSE(termination)"
         else:
             return "FALSE"
-            
+
     def process_graphml(self, exit_code):
         """Process and generate GraphML witness"""
         witness_path = f"{self.log_file}.witness"
         if not os.path.exists(witness_path):
             return None
-            
+
         with open(witness_path, 'r') as f:
             witness_content = f.read()
-            
+
         # Determine witness type
         witness_type = "correctness_witness" if exit_code == 0 else "violation_witness"
-        
+
         # Calculate program hash
         with open(self.benchmarks[0], 'rb') as f:
             program_hash = hashlib.sha256(f.read()).hexdigest()
-            
+
         # Create metadata to insert
         metadata = f"""<data key="witness-type">{witness_type}</data>
       <data key="producer">{self.tool_name}</data>
@@ -199,28 +199,28 @@ class ToolWrapper(ABC):
       <data key="programhash">{program_hash}</data>
       <data key="architecture">{self.bit_width}bit</data>
       <data key="creationtime">{datetime.now().isoformat()}</data>"""
-      
+
         # Insert metadata after <graph edgedefault="directed">
         processed_witness = re.sub(
             r'(<graph edgedefault="directed">)',
             r'\1\n      ' + metadata,
             witness_content
         )
-        
+
         return processed_witness
-        
+
     def setup_environment(self):
         """Set up temporary directories and files"""
         # Create temporary directory for benchmarks
         self.bm_dir = tempfile.mkdtemp(prefix=f"{self.tool_name}-benchmark.")
-        
+
         # Create temporary log file
         log_fd, self.log_file = tempfile.mkstemp(prefix=f"{self.tool_name}-log.")
         os.close(log_fd)
-        
+
         # Set up GMON_OUT_PREFIX
         os.environ['GMON_OUT_PREFIX'] = f"{os.path.basename(self.benchmarks[0])}.gmon.out"
-        
+
     def cleanup(self):
         """Clean up temporary files"""
         if self.log_file:
@@ -230,37 +230,37 @@ class ToolWrapper(ABC):
                     os.remove(path)
         if self.bm_dir and os.path.exists(self.bm_dir):
             shutil.rmtree(self.bm_dir)
-            
+
     @abstractmethod
     def run(self):
         """Run the tool - to be implemented by subclasses"""
         pass
-        
+
     @abstractmethod
     def print_version(self):
         """Print tool version - to be implemented by subclasses"""
         pass
-        
+
     def execute(self):
         """Main execution method"""
         try:
             self.validate_inputs()
             self.parse_property_file()
-            self.setup_environment()           
-            
+            self.setup_environment()
+
             # Run the tool
             ec = self.run()
-            
+
             # Process results
             log_ok_path = f"{self.log_file}.ok"
             if not os.path.exists(log_ok_path) or os.path.getsize(log_ok_path) == 0:
                 sys.exit(1)
-                
+
             with open(log_ok_path, 'r') as f:
                 log_content = f.read()
-                
+
             print(log_content)
-                
+
             # Generate result
             if ec == 0:
                 if self.witness_file:
@@ -279,8 +279,8 @@ class ToolWrapper(ABC):
                 print(result)
             else:
                 print("UNKNOWN")
-                
+
             sys.exit(ec)
-            
+
         finally:
             self.cleanup()
